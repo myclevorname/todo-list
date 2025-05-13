@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("dvui", dvui_dep.module("dvui_raylib"));
 
     const exe = b.addExecutable(.{
-        .name = "gui",
+        .name = "todo",
         .root_module = exe_mod,
     });
 

@@ -1,9 +1,9 @@
 .{
-    .name = .gui,
+    .name = .todo,
 
     .version = "0.0.0",
 
-    .fingerprint = 0xd4ff50f8c098b675, // Changing this has security and trust implications.
+    .fingerprint = 0x5a0eb6a0089f4d54, // Changing this has security and trust implications.
 
     .minimum_zig_version = "0.14.0",
 
