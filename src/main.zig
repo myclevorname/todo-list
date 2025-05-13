@@ -72,7 +72,7 @@ fn frame() !void {
                 const removed = tasks.orderedRemove(task.key_ptr.*);
                 allocator.free(ptr);
                 std.debug.assert(removed);
-                iter.reset();
+                iter = tasks.iterator();
             }
         }
     }
