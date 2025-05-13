@@ -1,0 +1,22 @@
+.{
+    .name = .gui,
+
+    .version = "0.0.0",
+
+    .fingerprint = 0xd4ff50f8c098b675, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.14.0",
+
+    .dependencies = .{
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui#13a86d035894087fd8414b0e3b045f487b8ca84d",
+            .hash = "dvui-0.2.0-AQFJmavOzQCqVurzQUMj3YLrBcI0IImQNCBKHIsfI3gk",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
