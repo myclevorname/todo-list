@@ -19,6 +19,13 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.addImport("dvui", dvui_dep.module("dvui_raylib"));
 
+    const folders = b.dependency("known_folders", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe_mod.addImport("folders", folders.module("known-folders"));
+
     const exe = b.addExecutable(.{
         .name = "todo",
         .root_module = exe_mod,

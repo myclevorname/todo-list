@@ -1,6 +1,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const builtin = @import("builtin");
+const folders = @import("folders");
 
 const dc = dvui.backend.c;
 
@@ -9,21 +10,69 @@ const is_debug = builtin.mode == .Debug;
 var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
 const allocator = gpa.allocator();
 
+var tasks = std.StringArrayHashMap(struct { delete: bool, index: usize }).init(allocator);
+var task_counter: usize = 0;
+
 fn addTask(k: []const u8) !void {
+    if (k.len == 0) return;
     const string = try allocator.dupe(u8, k);
     _ = try tasks.getOrPutValue(string, .{ .delete = false, .index = task_counter });
     task_counter += 1;
 }
 
-pub fn main() !void {
-    try addTask("do stuff");
-    try addTask("do things");
+/// Reads the tasks into `tasks`.
+fn readTasks(reader: anytype) !void {
+    const buffer = try reader.readAllAlloc(allocator, 1 << 16);
+    defer allocator.free(buffer);
+    if (buffer.len == 0) return;
 
+    var iter = std.mem.splitAny(u8, buffer, &.{ '\r', '\n' });
+
+    try addTask(iter.first());
+
+    while (iter.next()) |t| try addTask(t);
+}
+
+fn writeTasks(file: std.fs.File) !void {
+    try file.seekTo(0);
+    try file.setEndPos(0);
+
+    const writer = file.writer();
+
+    if (tasks.count() == 0) return;
+
+    for (tasks.keys()) |line| {
+        try writer.writeAll(line);
+        try writer.writeByte('\n');
+    }
+}
+
+pub fn main() !void {
     defer _ = gpa.deinit();
     defer tasks.deinit();
     defer {
         for (tasks.keys()) |key| allocator.free(key);
     }
+    const file = blk: {
+        const path = (folders.getPath(allocator, .data) catch break :blk null) orelse break :blk null;
+        defer allocator.free(path);
+
+        var base = std.fs.cwd().makeOpenPath(path, .{}) catch break :blk null;
+        defer base.close();
+
+        var subdir = base.makeOpenPath("todo", .{}) catch break :blk null;
+        defer subdir.close();
+
+        const file = subdir.createFile("tasks", .{ .read = true, .truncate = false }) catch break :blk null;
+        break :blk file;
+    };
+    defer if (file) |f| f.close();
+
+    if (file) |f| {
+        readTasks(f.reader()) catch {};
+    }
+
+    defer if (file) |f| writeTasks(f) catch std.debug.print("Cannot write tasks to file", .{});
 
     var backend = try dvui.backend.initWindow(.{
         .gpa = allocator,
@@ -54,9 +103,6 @@ pub fn main() !void {
         dc.EndDrawing();
     }
 }
-
-var tasks = std.StringArrayHashMap(struct { delete: bool, index: usize }).init(allocator);
-var task_counter: usize = 0;
 
 fn frame() !void {
     var scroll = try dvui.scrollArea(@src(), .{}, .{ .expand = .both });
