@@ -8,7 +8,7 @@ const dc = dvui.backend.c;
 const is_debug = builtin.mode == .Debug;
 
 const TaskList = struct {
-    map: std.StringArrayHashMap(struct { delete: bool, index: usize }),
+    list: std.DoublyLinkedList(void),
     allocator: std.mem.Allocator,
     counter: u64 = 0,
 
@@ -16,7 +16,9 @@ const TaskList = struct {
         if (task.len == 0) return;
         const string = try self.allocator.dupe(u8, task);
         errdefer self.allocator.free(string);
-        _ = try self.map.getOrPutValue(string, .{ .delete = false, .index = self.counter });
+        const elem = try self.allocator.create(Element);
+        elem.* = .{ .index = self.counter, .string = string };
+        self.list.append(&elem.node);
         self.counter += 1;
     }
     fn restore(self: *TaskList, file: std.fs.File) !void {
@@ -37,40 +39,42 @@ const TaskList = struct {
         try file.setEndPos(0);
 
         const writer = file.writer();
-
-        for (self.map.keys()) |line| {
-            try writer.writeAll(line);
-            try writer.writeByte('\n');
+        var current = self.list.first;
+        while (current) |x| {
+            current = x.next;
+            const element: *Element = @fieldParentPtr("node", x);
+            try writer.print("{s}\n", .{element.string});
         }
     }
     fn freeDeleted(self: *TaskList) void {
-        var iter = self.map.iterator();
-        while (iter.next()) |task| {
-            if (task.value_ptr.delete) {
-                const ptr = task.key_ptr.*;
-                const removed = self.map.orderedRemove(task.key_ptr.*);
-                self.allocator.free(ptr);
-                std.debug.assert(removed);
-                iter = self.map.iterator();
+        var current = self.list.first;
+        while (current) |x| {
+            current = x.next;
+            const element: *Element = @fieldParentPtr("node", x);
+            if (element.to_free) {
+                self.list.remove(x);
+                self.allocator.free(element.string);
+                self.allocator.destroy(element);
             }
         }
     }
     fn init(allocator: std.mem.Allocator) TaskList {
-        return .{ .allocator = allocator, .map = .init(allocator) };
+        return .{ .allocator = allocator, .list = .{} };
     }
-    fn deinit(self: *TaskList) void {
-        for (self.map.keys()) |key| self.allocator.free(key);
-        self.map.deinit();
-    }
+    const Element = struct {
+        node: std.DoublyLinkedList(void).Node = .{ .data = {} },
+        index: u64,
+        string: []const u8,
+        to_free: bool = false,
+    };
 };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
-    defer _ = gpa.deinit();
+    // defer _ = gpa.deinit(); // The OS is going to release the memory used by the program anyway
     const allocator = gpa.allocator();
 
     var tasks = TaskList.init(allocator);
-    defer tasks.deinit();
 
     const file = blk: {
         const path = (folders.getPath(allocator, .data) catch break :blk null) orelse break :blk null;
@@ -132,30 +136,34 @@ fn frame(tasks: *TaskList) !void {
 
     const opts = dvui.ButtonWidget.defaults.override(.{ .border = .all(1) });
 
-    var iter = tasks.map.iterator();
-    while (iter.next()) |task| {
+    var iter = tasks.list.first;
+    while (iter) |task| {
+        iter = task.next;
+
+        const element: *TaskList.Element = @fieldParentPtr("node", task);
         var span = try dvui.box(@src(), .horizontal, .{
             .expand = .horizontal,
-            .id_extra = task.value_ptr.index,
+            .id_extra = element.index,
         });
         defer span.deinit();
 
-        const delete = try dvui.button(@src(), "X", .{}, opts);
-        task.value_ptr.delete = delete;
+        element.to_free = try dvui.button(@src(), "×", .{}, opts);
 
         var tl = try dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .gravity_y = 0.5 });
         defer tl.deinit();
 
-        try tl.addText(task.key_ptr.*, .{});
+        const string = element.string;
+
+        try tl.addText(string, .{});
     }
 
     {
         var span = try dvui.box(@src(), .horizontal, .{ .expand = .horizontal });
         defer span.deinit();
 
-        const add_button = try dvui.button(@src(), "Add", .{}, opts);
+        const add_button = try dvui.button(@src(), "+", .{}, opts);
         var add_text = try dvui.textEntry(@src(), .{}, .{});
-        if (add_button) {
+        if (add_button or add_text.enter_pressed) {
             try tasks.append(add_text.getText());
             add_text.len = 0;
         }
