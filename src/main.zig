@@ -7,52 +7,71 @@ const dc = dvui.backend.c;
 
 const is_debug = builtin.mode == .Debug;
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
-const allocator = gpa.allocator();
+const TaskList = struct {
+    map: std.StringArrayHashMap(struct { delete: bool, index: usize }),
+    allocator: std.mem.Allocator,
+    counter: u64 = 0,
 
-var tasks = std.StringArrayHashMap(struct { delete: bool, index: usize }).init(allocator);
-var task_counter: usize = 0;
-
-fn addTask(k: []const u8) !void {
-    if (k.len == 0) return;
-    const string = try allocator.dupe(u8, k);
-    _ = try tasks.getOrPutValue(string, .{ .delete = false, .index = task_counter });
-    task_counter += 1;
-}
-
-/// Reads the tasks into `tasks`.
-fn readTasks(reader: anytype) !void {
-    const buffer = try reader.readAllAlloc(allocator, 1 << 16);
-    defer allocator.free(buffer);
-    if (buffer.len == 0) return;
-
-    var iter = std.mem.splitAny(u8, buffer, &.{ '\r', '\n' });
-
-    try addTask(iter.first());
-
-    while (iter.next()) |t| try addTask(t);
-}
-
-fn writeTasks(file: std.fs.File) !void {
-    try file.seekTo(0);
-    try file.setEndPos(0);
-
-    const writer = file.writer();
-
-    if (tasks.count() == 0) return;
-
-    for (tasks.keys()) |line| {
-        try writer.writeAll(line);
-        try writer.writeByte('\n');
+    fn append(self: *TaskList, task: []const u8) !void {
+        if (task.len == 0) return;
+        const string = try self.allocator.dupe(u8, task);
+        errdefer self.allocator.free(string);
+        _ = try self.map.getOrPutValue(string, .{ .delete = false, .index = self.counter });
+        self.counter += 1;
     }
-}
+    fn restore(self: *TaskList, file: std.fs.File) !void {
+        const reader = file.reader();
+
+        const buffer = try reader.readAllAlloc(self.allocator, 1 << 16);
+        defer self.allocator.free(buffer);
+        if (buffer.len == 0) return;
+
+        var iter = std.mem.splitAny(u8, buffer, &.{ '\r', '\n' });
+
+        try self.append(iter.first());
+
+        while (iter.next()) |task| try self.append(task);
+    }
+    fn save(self: *const TaskList, file: std.fs.File) !void {
+        try file.seekTo(0);
+        try file.setEndPos(0);
+
+        const writer = file.writer();
+
+        for (self.map.keys()) |line| {
+            try writer.writeAll(line);
+            try writer.writeByte('\n');
+        }
+    }
+    fn freeDeleted(self: *TaskList) void {
+        var iter = self.map.iterator();
+        while (iter.next()) |task| {
+            if (task.value_ptr.delete) {
+                const ptr = task.key_ptr.*;
+                const removed = self.map.orderedRemove(task.key_ptr.*);
+                self.allocator.free(ptr);
+                std.debug.assert(removed);
+                iter = self.map.iterator();
+            }
+        }
+    }
+    fn init(allocator: std.mem.Allocator) TaskList {
+        return .{ .allocator = allocator, .map = .init(allocator) };
+    }
+    fn deinit(self: *TaskList) void {
+        for (self.map.keys()) |key| self.allocator.free(key);
+        self.map.deinit();
+    }
+};
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var tasks = TaskList.init(allocator);
     defer tasks.deinit();
-    defer {
-        for (tasks.keys()) |key| allocator.free(key);
-    }
+
     const file = blk: {
         const path = (folders.getPath(allocator, .data) catch break :blk null) orelse break :blk null;
         defer allocator.free(path);
@@ -68,11 +87,9 @@ pub fn main() !void {
     };
     defer if (file) |f| f.close();
 
-    if (file) |f| {
-        readTasks(f.reader()) catch {};
-    }
+    if (file) |f| tasks.restore(f) catch std.debug.print("Failed to read from tasks file\n", .{});
 
-    defer if (file) |f| writeTasks(f) catch std.debug.print("Cannot write tasks to file", .{});
+    defer if (file) |f| tasks.save(f) catch std.debug.print("Cannot write tasks to tasks file", .{});
 
     var backend = try dvui.backend.initWindow(.{
         .gpa = allocator,
@@ -94,7 +111,7 @@ pub fn main() !void {
         if (try backend.addAllEvents(&window)) break;
         backend.clear();
 
-        try frame();
+        try frame(&tasks);
 
         _ = try window.end(.{});
 
@@ -104,28 +121,18 @@ pub fn main() !void {
     }
 }
 
-fn frame() !void {
+fn frame(tasks: *TaskList) !void {
     var scroll = try dvui.scrollArea(@src(), .{}, .{ .expand = .both });
     defer scroll.deinit();
 
     var box = try dvui.box(@src(), .vertical, .{ .expand = .both });
     defer box.deinit();
-    {
-        var iter = tasks.iterator();
-        while (iter.next()) |task| {
-            if (task.value_ptr.delete) {
-                const ptr = task.key_ptr.*;
-                const removed = tasks.orderedRemove(task.key_ptr.*);
-                allocator.free(ptr);
-                std.debug.assert(removed);
-                iter = tasks.iterator();
-            }
-        }
-    }
+
+    tasks.freeDeleted();
 
     const opts = dvui.ButtonWidget.defaults.override(.{ .border = .all(1) });
 
-    var iter = tasks.iterator();
+    var iter = tasks.map.iterator();
     while (iter.next()) |task| {
         var span = try dvui.box(@src(), .horizontal, .{
             .expand = .horizontal,
@@ -149,7 +156,7 @@ fn frame() !void {
         const add_button = try dvui.button(@src(), "Add", .{}, opts);
         var add_text = try dvui.textEntry(@src(), .{}, .{});
         if (add_button) {
-            try addTask(add_text.getText());
+            try tasks.append(add_text.getText());
             add_text.len = 0;
         }
         add_text.deinit();
